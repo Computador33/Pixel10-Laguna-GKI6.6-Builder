@@ -112,20 +112,30 @@ jobs:
             libelf-dev libfl-dev libncurses5-dev libssl-dev \
             lz4 lzop python3 rsync zip zlib1g-dev zstd
 
-      # ── Step 4: Download + extract clang, then DELETE the archive ─────────
+           # ── Step 4: Download + extract clang, then DELETE the archive ─────────
       - name: Retrieve Google Clang Compiler
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
           echo "Downloading toolchain from: ${{ github.event.inputs.clang_url }}"
-          curl -Lo /tmp/toolchain.tar.gz "${{ github.event.inputs.clang_url }}"
+          
+          # For Gerrit archive URLs, use --compressed flag and validate the download
+          curl -L --compressed -o /tmp/toolchain.tar.gz "${{ github.event.inputs.clang_url }}"
+          
+          # Verify it's a valid gzip file before extraction
+          if ! file /tmp/toolchain.tar.gz | grep -q "gzip"; then
+            echo "ERROR: Downloaded file is not a valid gzip archive!"
+            echo "File type: $(file /tmp/toolchain.tar.gz)"
+            exit 1
+          fi
+          
           echo "Extracting toolchain..."
           tar -xzf /tmp/toolchain.tar.gz -C $GITHUB_WORKSPACE/clang --strip-components=1 \
             || tar -xzf /tmp/toolchain.tar.gz -C $GITHUB_WORKSPACE/clang
+          
           # Delete archive immediately — no longer needed
           rm -f /tmp/toolchain.tar.gz
           echo "Toolchain ready. Disk space:"
           df -h /
-
       # ── Step 5: Sparse + shallow clone, strip unused arches immediately ────
       - name: Fetch Pixel 10 kernel tree (stripped)
         run: |
