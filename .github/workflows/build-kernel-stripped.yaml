@@ -1,0 +1,286 @@
+name: Android Custom Kernel Builder (Pixel 10 - Laguna 6.6)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'Google Pixel 10 Kernel Git Source Link'
+        required: true
+        default: 'https://github.com/google/aosp-kernel-gki-laguna'
+      kernel_branch:
+        description: 'Laguna 6.6 GKI Branch'
+        required: true
+        default: 'laguna-android15-6.6'
+      kernel_defconfig:
+        description: 'Laguna defconfig name (from arch/arm64/configs/)'
+        required: true
+        default: 'gki_defconfig'
+      clang_url:
+        description: 'Compiler Prebuilt Download Link'
+        required: true
+        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/clang-r522817.tar.gz'
+      kernelsu_next_enabled:
+        description: 'Integrate KernelSU-Next (rifsxd setup)'
+        required: true
+        type: boolean
+        default: true
+      kernelsu_next_version:
+        description: 'KernelSU-Next Version / Target Branch'
+        required: true
+        default: 'next'
+      susfs_enabled:
+        description: 'Patch Advanced SUSFS (Root Concealment Overlay)'
+        required: true
+        type: boolean
+        default: true
+      susfs_patch_url:
+        description: 'Direct link to Laguna GKI 6.6 SUSFS Hook patch script'
+        required: false
+        default: 'https://raw.githubusercontent.com/l0ck3d0ninvestment/susfs-laguna-patch/main/susfs_gki_6.6.sh'
+      zeromount_enabled:
+        description: 'Inject zeromount Mount-Shield Cloak Patch'
+        required: true
+        type: boolean
+        default: true
+      bbr_enabled:
+        description: 'Apply High-Speed TCP BBRv3 Pacing Tuning'
+        required: true
+        type: boolean
+        default: true
+      override_sublevel:
+        description: 'Override/Spoof Kernel SUBLEVEL Version & Localversion'
+        required: true
+        type: boolean
+        default: true
+      sublevel_version:
+        description: 'Forced Sublevel Patch Version (e.g. 102)'
+        required: false
+        default: '102'
+      localversion_override:
+        description: 'Forced Localversion / Extra version string'
+        required: false
+        default: '-android15-6.6-laguna'
+      pre_compilation_hook_commands:
+        description: 'Injectable pre-compilation troubleshooting commands'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: Build Pixel 10 Kernel
+    runs-on: ubuntu-latest
+    steps:
+
+      # ── Step 1: Reclaim max runner disk space ──────────────────────────────
+      - name: Maximize Container Storage
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      # ── Step 2: Aggressively free additional preinstalled bloat ────────────
+      - name: Free Additional Runner Disk Space
+        run: |
+          echo "=== Disk space BEFORE cleanup ==="
+          df -h /
+          # Remove large preinstalled packages not needed for kernel builds
+          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet 2>/dev/null || true
+          sudo rm -rf /opt/ghc 2>/dev/null || true
+          sudo rm -rf /usr/local/.ghcup 2>/dev/null || true
+          sudo rm -rf /usr/local/share/boost 2>/dev/null || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          sudo rm -rf /usr/share/swift 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          echo "=== Disk space AFTER cleanup ==="
+          df -h /
+
+      # ── Step 3: Install only required build dependencies ──────────────────
+      - name: Prep Compiling Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex \
+            gcc-multilib g++-multilib git \
+            libelf-dev libfl-dev libncurses5-dev libssl-dev \
+            lz4 lzop python3 rsync zip zlib1g-dev zstd
+
+      # ── Step 4: Download + extract clang, then DELETE the archive ─────────
+      - name: Retrieve Google Clang Compiler
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/clang
+          echo "Downloading toolchain from: ${{ github.event.inputs.clang_url }}"
+          curl -Lo /tmp/toolchain.tar.gz "${{ github.event.inputs.clang_url }}"
+          echo "Extracting toolchain..."
+          tar -xzf /tmp/toolchain.tar.gz -C $GITHUB_WORKSPACE/clang --strip-components=1 \
+            || tar -xzf /tmp/toolchain.tar.gz -C $GITHUB_WORKSPACE/clang
+          # Delete archive immediately — no longer needed
+          rm -f /tmp/toolchain.tar.gz
+          echo "Toolchain ready. Disk space:"
+          df -h /
+
+      # ── Step 5: Sparse + shallow clone, strip unused arches immediately ────
+      - name: Fetch Pixel 10 kernel tree (stripped)
+        run: |
+          echo "Cloning kernel source (depth=1)..."
+          git clone \
+            --depth=1 \
+            --single-branch \
+            -b ${{ github.event.inputs.kernel_branch }} \
+            ${{ github.event.inputs.kernel_repo }} \
+            $GITHUB_WORKSPACE/kernel-source
+
+          echo "Stripping unused arch directories (keeping arm64 + arm only)..."
+          cd $GITHUB_WORKSPACE/kernel-source/arch
+          for dir in */; do
+            dir="${dir%/}"
+            if [[ "$dir" != "arm64" && "$dir" != "arm" && "$dir" != "Kconfig" ]]; then
+              rm -rf "$dir"
+            fi
+          done
+
+          echo "Removing Documentation, samples, tools/testing..."
+          cd $GITHUB_WORKSPACE/kernel-source
+          rm -rf Documentation
+          rm -rf samples
+          rm -rf tools/testing
+          rm -rf tools/perf
+          rm -rf usr/include
+
+          echo "Source tree stripped. Disk space:"
+          df -h /
+          echo "Kernel source size:"
+          du -sh $GITHUB_WORKSPACE/kernel-source
+
+      # ── Step 6: Pre-compilation hook (optional user commands) ─────────────
+      - name: GKI Automated Compilation Error Patch Correction
+        if: ${{ github.event.inputs.pre_compilation_hook_commands != '' }}
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          ${{ github.event.inputs.pre_compilation_hook_commands }}
+
+      # ── Step 7: Sublevel / localversion spoof ─────────────────────────────
+      - name: Spoof Kernel Sublevel & Localversion
+        if: ${{ github.event.inputs.override_sublevel == true || github.event.inputs.override_sublevel == 'true' }}
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          echo "Forcing sublevel to: ${{ github.event.inputs.sublevel_version }}"
+          sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ github.event.inputs.sublevel_version }}/" Makefile
+          echo "${{ github.event.inputs.localversion_override }}" > localversion
+          echo "Localversion: $(cat localversion)"
+
+      # ── Step 8: KernelSU-Next ──────────────────────────────────────────────
+      - name: Integrate KernelSU-Next
+        if: ${{ github.event.inputs.kernelsu_next_enabled == true || github.event.inputs.kernelsu_next_enabled == 'true' }}
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          echo "Integrating KernelSU-Next..."
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s ${{ github.event.inputs.kernelsu_next_version }}
+
+      # ── Step 9: SUSFS patches ─────────────────────────────────────────────
+      - name: Patch SUSFS (Root Concealment Frame)
+        if: ${{ (github.event.inputs.susfs_enabled == true || github.event.inputs.susfs_enabled == 'true') && github.event.inputs.susfs_patch_url != '' }}
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          echo "Applying GKI 6.6 SUSFS patches..."
+          curl -LSs "${{ github.event.inputs.susfs_patch_url }}" | bash
+
+      # ── Step 10: Zeromount ────────────────────────────────────────────────
+      - name: Inject zeromount Cloak Module
+        if: ${{ github.event.inputs.zeromount_enabled == true || github.event.inputs.zeromount_enabled == 'true' }}
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          echo "Configuring zeromount virtual directory shield..."
+          sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c
+          mkdir -p init/overlay_zeromount
+          touch init/overlay_zeromount/placeholder
+
+      # ── Step 11: BBR TCP tuning ───────────────────────────────────────────
+      - name: Configure BBR congestion control overrides
+        if: ${{ github.event.inputs.bbr_enabled == true || github.event.inputs.bbr_enabled == 'true' }}
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          DEFCONFIG="arch/arm64/configs/${{ github.event.inputs.kernel_defconfig }}"
+          echo "CONFIG_TCP_CONG_BBR=y"            >> "$DEFCONFIG"
+          echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""  >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ=y"              >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ_CODEL=y"        >> "$DEFCONFIG"
+          echo "Applied BBRv3 / FQ Pacing config flags."
+
+      # ── Step 12: Check disk before compile ───────────────────────────────
+      - name: Disk Space Check Pre-Compile
+        run: |
+          echo "=== Disk space before compilation ==="
+          df -h /
+          echo "=== Workspace sizes ==="
+          du -sh $GITHUB_WORKSPACE/clang
+          du -sh $GITHUB_WORKSPACE/kernel-source
+
+      # ── Step 13: Compile ─────────────────────────────────────────────────
+      - name: Launch Principal Compilation (LLVM Optimized)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-source
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+
+          echo "Syncing defconfig: ${{ github.event.inputs.kernel_defconfig }}..."
+          make O=out LLVM=1 LLVM_IAS=1 ${{ github.event.inputs.kernel_defconfig }}
+
+          echo "Starting compilation with $(nproc --all) cores..."
+          make -j$(nproc --all) O=out LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            2>&1 | tee build_log.txt
+
+      # ── Step 14: Strip intermediate build objects to free space ───────────
+      - name: Strip Build Intermediates
+        run: |
+          echo "Removing intermediate .o/.d/.cmd files to reclaim space..."
+          find $GITHUB_WORKSPACE/kernel-source/out -type f \
+            \( -name "*.o" -o -name "*.d" -o -name "*.cmd" -o -name "*.a" \) \
+            -delete
+          echo "Post-strip disk space:"
+          df -h /
+
+      # ── Step 15: Package with AnyKernel3 ─────────────────────────────────
+      - name: Package with AnyKernel3 (Google Tensor G5 GKI Target)
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+
+          IMAGE_PATH=""
+          if [ -f "kernel-source/out/arch/arm64/boot/Image.lz4" ]; then
+            IMAGE_PATH="kernel-source/out/arch/arm64/boot/Image.lz4"
+          elif [ -f "kernel-source/out/arch/arm64/boot/Image" ]; then
+            IMAGE_PATH="kernel-source/out/arch/arm64/boot/Image"
+          fi
+
+          if [ -n "$IMAGE_PATH" ]; then
+            cp "$IMAGE_PATH" AnyKernel3/
+            cd AnyKernel3
+            zip -r9 ../laguna-kernel-update.zip *
+            echo "AnyKernel3 ZIP built successfully."
+          else
+            echo "ERROR: Boot Image not found in out/arch/arm64/boot/"
+            ls -lh $GITHUB_WORKSPACE/kernel-source/out/arch/arm64/boot/ 2>/dev/null || true
+            exit 1
+          fi
+
+      # ── Step 16: Upload artifacts ─────────────────────────────────────────
+      - name: Deliver Release Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pixel-10-Laguna-Kernel
+          path: |
+            laguna-kernel-update.zip
+            kernel-source/build_log.txt
