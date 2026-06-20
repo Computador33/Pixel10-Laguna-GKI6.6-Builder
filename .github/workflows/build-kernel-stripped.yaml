@@ -120,7 +120,7 @@ jobs:
           curl --fail --show-error --location --retry 3 --retry-all-errors \
             -o /tmp/toolchain.tar.gz "${{ github.event.inputs.clang_url }}"
           if ! tar -tzf /tmp/toolchain.tar.gz >/dev/null; then
-            echo "ERROR: Downloaded file is not a valid gzip archive!"
+            echo "ERROR: Downloaded file is not a valid tar.gz archive!"
             echo "File type: $(file /tmp/toolchain.tar.gz)"
             exit 1
           fi

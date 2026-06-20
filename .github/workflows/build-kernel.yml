@@ -123,7 +123,7 @@ jobs:
           
           # Verify it's a valid tarball before extraction
           if ! tar -tzf /tmp/toolchain.tar.gz >/dev/null; then
-            echo "ERROR: Downloaded file is not a valid gzip archive!"
+            echo "ERROR: Downloaded file is not a valid tar.gz archive!"
             echo "File type: $(file /tmp/toolchain.tar.gz)"
             exit 1
           fi
