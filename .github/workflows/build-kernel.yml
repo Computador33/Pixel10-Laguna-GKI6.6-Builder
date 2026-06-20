@@ -18,7 +18,7 @@ on:
       clang_url:
         description: 'Compiler Prebuilt Download Link'
         required: true
-        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz'
+       default: 'https://github.com/ZyCromerZ/Clang/releases/download/20.0.0git-20250502-release/Clang-20.0.0git-20250502.tar.gz'
       kernelsu_next_enabled:
         description: 'Integrate KernelSU-Next (rifsxd setup)'
         required: true
