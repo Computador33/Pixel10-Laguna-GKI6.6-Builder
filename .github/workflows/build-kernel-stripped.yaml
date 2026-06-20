@@ -18,7 +18,7 @@ on:
       clang_url:
         description: 'Compiler Prebuilt Download Link'
         required: true
-        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/clang-r522817.tar.gz'
+        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz'
       kernelsu_next_enabled:
         description: 'Integrate KernelSU-Next (rifsxd setup)'
         required: true
@@ -117,7 +117,13 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
           echo "Downloading toolchain from: ${{ github.event.inputs.clang_url }}"
-          curl -Lo /tmp/toolchain.tar.gz "${{ github.event.inputs.clang_url }}"
+          curl --fail --show-error --location --retry 3 --retry-all-errors \
+            -o /tmp/toolchain.tar.gz "${{ github.event.inputs.clang_url }}"
+          if ! tar -tzf /tmp/toolchain.tar.gz >/dev/null; then
+            echo "ERROR: Downloaded file is not a valid tar.gz archive!"
+            echo "File type: $(file /tmp/toolchain.tar.gz)"
+            exit 1
+          fi
           echo "Extracting toolchain..."
           tar -xzf /tmp/toolchain.tar.gz -C $GITHUB_WORKSPACE/clang --strip-components=1 \
             || tar -xzf /tmp/toolchain.tar.gz -C $GITHUB_WORKSPACE/clang
